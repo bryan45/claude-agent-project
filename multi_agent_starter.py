@@ -1,18 +1,36 @@
-"""Starter for a two-agent researcher -> synthesizer pipeline using the Claude Agent SDK."""
+"""Starter for a researcher -> synthesizer pipeline: direct Anthropic API for
+research, Claude Agent SDK for synthesis."""
 
 import asyncio
 import sys
+import time
 
 sys.stdout.reconfigure(encoding="utf-8")
 
+import anthropic
+from pydantic import BaseModel
+from typing import Literal
+
 from claude_agent_sdk import (
-    AgentDefinition,
     AssistantMessage,
     ClaudeAgentOptions,
     ResultMessage,
     TextBlock,
     query,
 )
+
+
+class Citation(BaseModel):
+    file: str
+    snippet: str
+    line_start: int
+    line_end: int
+
+
+class ResearcherOutput(BaseModel):
+    citations: list[Citation]
+    confidence: Literal["low", "medium", "high"]
+    refusal_reason: str | None = None
 
 RESEARCHER_PROMPT = """
 Find evidence in the project files relevant to the user's question.
@@ -25,42 +43,51 @@ SYNTHESIZER_PROMPT = """
 Compose a final answer that cites only the material the researcher returned.
 """
 
-ORCHESTRATOR_PROMPT = """
-You have two subagents available via the Agent tool: "researcher" and "synthesizer".
-For every user question:
-1. Call "researcher" with the user's question to gather evidence.
-2. Call "synthesizer", passing it the researcher's JSON output verbatim, to compose the final answer.
-3. Return the synthesizer's answer to the user as your final response.
-Do not answer from your own knowledge without going through this pipeline.
-"""
-
-OPTIONS = ClaudeAgentOptions(
-    system_prompt=ORCHESTRATOR_PROMPT,
+SYNTHESIZER_OPTIONS = ClaudeAgentOptions(
+    system_prompt=SYNTHESIZER_PROMPT,
     cwd=".",
     max_turns=6,
-    agents={
-        "researcher": AgentDefinition(
-            description=(
-                "Searches project files for evidence relevant to a question "
-                "and returns structured citations."
-            ),
-            prompt=RESEARCHER_PROMPT,
-            tools=["Read", "Grep", "Glob"],
-        ),
-        "synthesizer": AgentDefinition(
-            description="Writes the final answer using only the researcher's cited evidence.",
-            prompt=SYNTHESIZER_PROMPT,
-            tools=[],
-        ),
-    },
 )
+
+_anthropic_client = anthropic.Anthropic()
+
+
+def call_researcher(user_query: str, max_retries: int = 3) -> ResearcherOutput:
+    delay = 1.0
+    for attempt in range(max_retries):
+        try:
+            response = _anthropic_client.messages.parse(
+                model="claude-opus-5",
+                max_tokens=2048,
+                system=RESEARCHER_PROMPT,
+                messages=[{"role": "user", "content": user_query}],
+                output_format=ResearcherOutput,
+            )
+            return response.parsed_output
+        except anthropic.RateLimitError:
+            if attempt == max_retries - 1:
+                raise
+            time.sleep(delay)
+            delay *= 2
+    raise AssertionError("unreachable")
 
 
 async def main() -> None:
     question = "What does this project do?"
 
+    researcher_output = call_researcher(question)
+    print(
+        f"--- researcher confidence: {researcher_output.confidence}, "
+        f"citations: {len(researcher_output.citations)}"
+    )
+
+    synthesizer_prompt = (
+        f"User question: {question}\n\n"
+        f"Researcher findings (JSON):\n{researcher_output.model_dump_json()}"
+    )
+
     last_result: ResultMessage | None = None
-    async for message in query(prompt=question, options=OPTIONS):
+    async for message in query(prompt=synthesizer_prompt, options=SYNTHESIZER_OPTIONS):
         if isinstance(message, AssistantMessage) and message.parent_tool_use_id is None:
             for block in message.content:
                 if isinstance(block, TextBlock):

@@ -5,14 +5,14 @@ Small starter project for [`claude-agent-sdk`](https://pypi.org/project/claude-a
 ## Contents
 
 - **`test_query.py`** — minimal smoke test for the SDK's `query()` function: sends a one-off prompt and prints the reply.
-- **`multi_agent_starter.py`** — a two-agent pipeline example. An orchestrator delegates to a `researcher` subagent (searches project files via `Read`/`Grep`/`Glob` and returns structured JSON citations) and a `synthesizer` subagent (composes the final answer from only that evidence).
+- **`multi_agent_starter.py`** — a two-step pipeline example. `call_researcher()` calls the Anthropic API directly with structured outputs (`client.messages.parse(..., output_format=ResearcherOutput)`) to gather evidence for the question, then the result is handed to a `synthesizer` step run through `claude-agent-sdk` to compose the final answer.
 
 ## Setup
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install claude-agent-sdk
+pip install claude-agent-sdk anthropic
 ```
 
 The SDK shells out to the `claude` CLI (`@anthropic-ai/claude-code` on npm) as its transport, so that must be installed and on `PATH` (`npm install -g @anthropic-ai/claude-code`).
@@ -23,6 +23,8 @@ Either of the following works — the SDK/CLI picks up whichever is available:
 
 - **Interactive / local dev:** `claude login` (or `claude auth status` to check) authenticates via your claude.ai account. No `ANTHROPIC_API_KEY` needed.
 - **Scripted / non-interactive:** set `ANTHROPIC_API_KEY` in the environment before running.
+
+**Note:** `call_researcher()` in `multi_agent_starter.py` uses the raw `anthropic` SDK client directly, which does **not** share `claude login`'s credential store. It needs `ANTHROPIC_API_KEY` set, or `ant auth login` run separately, even if `claude login` is already configured for the Agent SDK's synthesizer step.
 
 ## Usage
 
